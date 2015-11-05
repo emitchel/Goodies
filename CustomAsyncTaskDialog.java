@@ -1,8 +1,14 @@
 package sandhills.material.template.dealer.app.dialogs;
 
+import org.apache.http.HttpResponse;
+import org.json.JSONObject;
+
 import sandhills.material.template.dealer.app.R;
+import sandhills.material.template.dealer.app.cache.CacheBase;
 import sandhills.material.template.dealer.app.classes.BundleConstants;
+import sandhills.material.template.dealer.app.classes.Validation;
 import sandhills.material.template.dealer.app.dialogs.DrillDownDialog.DrillDownPage;
+import sandhills.material.template.dealer.app.enums.DataType;
 import sandhills.material.template.dealer.app.helpers.JSONHelperWrapper;
 import sandhills.material.template.dealer.app.utils.Utils;
 import android.app.Dialog;
@@ -27,6 +33,20 @@ import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+/**
+ * <p>
+ * Tightly coupled with {@link JSONHelperWrapper}
+ * <p>
+ * Use this class if you want to have a simple popup display data given by a
+ * data call
+ * <p>
+ * This should really be considered an abstract AsyncTask that handle popup
+ * animations
+ * 
+ * @author elliot-mitchell
+ * 
+ * @param <T>
+ */
 public class CustomAsyncTaskDialog<T extends JSONHelperWrapper> extends
 		DialogFragment {
 	CustomDialogListener<T> mListener;
@@ -41,12 +61,36 @@ public class CustomAsyncTaskDialog<T extends JSONHelperWrapper> extends
 	ProgressBar pb;
 
 	public final static String TAG = "CustomAsyncTaskDialog";
-	
+
 	public interface CustomDialogListener<T> {
+		/**
+		 * Returning a listadapter populated with the helper class
+		 * 
+		 * @param result
+		 * @return
+		 */
 		public ListAdapter createAdapter(T result);
 
+		/**
+		 * Callback for method to call when item selected
+		 * 
+		 * @param helper
+		 * @param index
+		 */
 		public void onItemSelected(T helper, int index);
 
+		/**
+		 * Used to get an instance of the JSONHelperWrapper object
+		 * 
+		 * @return
+		 */
+		public T getJSONHelper();
+
+		/**
+		 * The network call to gather data.
+		 * 
+		 * @return
+		 */
 		public T request();
 	}
 
@@ -149,11 +193,18 @@ public class CustomAsyncTaskDialog<T extends JSONHelperWrapper> extends
 		return v;
 	}
 
+	
+	
 	private void populateResults(final T result) {
 		if (result != null && result.bSuccess) {
+
+			// Get Adapter from calling class
 			ListAdapter adapter = mListener.createAdapter(result);
+
 			if (adapter != null && adapter.getCount() > 0) {
+
 				mListView.setAdapter(adapter);
+
 				mListView.setOnItemClickListener(new OnItemClickListener() {
 					@Override
 					public void onItemClick(AdapterView<?> adapter, View v,
@@ -170,8 +221,10 @@ public class CustomAsyncTaskDialog<T extends JSONHelperWrapper> extends
 						.setDuration(Utils.ALPHA_ANIMATION).setListener(null);
 
 			} else {
-				Toast.makeText(mContext, "No items were provided for list",
-						Toast.LENGTH_LONG).show();
+				dismiss();
+				throw new Error(
+						"The adapter was not properly created for CustomAsyncTaskDialog");
+
 			}
 		} else {
 			result.getErrorAlertDialog(mContext).show();
@@ -194,16 +247,48 @@ public class CustomAsyncTaskDialog<T extends JSONHelperWrapper> extends
 	private class GetData<Y extends JSONHelperWrapper> extends
 			AsyncTask<String, Void, Y> {
 		ProgressBar pb;
+		CacheBase cache;
+		String sData;
+		DataType eType = DataType.NETWORK;
 
 		public GetData(ProgressBar pb) {
 			this.pb = pb;
 		}
 
-		@SuppressWarnings("unchecked")
 		@Override
 		protected Y doInBackground(String... arg0) {
 			try {
-				return (Y) mListener.request();
+				// We need to check the cache for the corresponding
+				// JSONHelperWrapper object first.
+				Y obj = (Y) mListener.getJSONHelper();
+
+				cache = obj.getCacheObject(mContext);
+				sData = "";
+
+				if (cache != null && cache.isStoredInCacheAndNotExpired()) {
+					sData = cache.getFromCache();
+				}
+
+				if (Validation.isValidString(sData)) {
+					obj.parseCacheStringData(sData);
+
+					// we MUST do this otherwise the corresponding error
+					// objects won't be set, and we can't handle errors
+					// appropriately
+					if (!obj.bSuccess) {
+						// meaning the data was corrupt/couldn't be parsed
+						obj = (Y) mListener.request();
+
+					} else {;
+						eType = DataType.CACHE;
+					}
+
+				} else {
+					obj = (Y) mListener.request();
+
+				}
+
+				return obj;
 			} catch (Exception e) {
 				e.printStackTrace();
 				return null;
@@ -212,8 +297,24 @@ public class CustomAsyncTaskDialog<T extends JSONHelperWrapper> extends
 
 		@Override
 		protected void onPostExecute(Y result) {
-			mResultData = (T) result;
-			populateResults((T) result);
+
+			if (result == null) {
+				//something went wrong
+				Toast.makeText(mContext, mContext.getString(R.string.somethingwentwrong), Toast.LENGTH_LONG).show();
+				dismiss();
+			} else {
+				
+				if (cache != null && !cache.isStoredInCacheAndNotExpired())
+					cache.commitToCache(result.originalDataString);
+
+				mResultData = (T) result;
+				populateResults((T) result);
+			}
+			
+			if(Utils.testingWithTemplate(mContext))
+				notifyDevOfRequest(eType,cache);
+			
+			//fade out progress bar			
 			pb.animate().alpha(0f).setDuration(Utils.ALPHA_ANIMATION)
 					.setListener(null);
 		}
@@ -223,5 +324,24 @@ public class CustomAsyncTaskDialog<T extends JSONHelperWrapper> extends
 			pb.setVisibility(View.VISIBLE);
 		}
 	}
+
+	private void notifyDevOfRequest( DataType eType, CacheBase cache) {
+		
+		switch(eType){
+		case CACHE:
+			Toast.makeText(mContext, "Pulled from cache - " + cache.getCacheAge() + " days old", Toast.LENGTH_LONG)
+			.show();
+			return;
+		case NETWORK:
+			Toast.makeText(mContext, "Network call", Toast.LENGTH_LONG).show();
+			return;
+		case DEFAULT:
+			Toast.makeText(mContext, "Using default data", Toast.LENGTH_LONG)
+			.show();
+			return;
+		}
+		
+	}
+	
 
 }
