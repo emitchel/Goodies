@@ -227,7 +227,13 @@ public class CustomAsyncTaskDialog<T extends JSONHelperWrapper> extends
 
 			}
 		} else {
-			result.getErrorAlertDialog(mContext).show();
+			if(result!=null)
+				result.getErrorAlertDialog(mContext).show();
+			else {
+				dismiss();
+				throw new Error(
+						"Houston we have a problem");
+			}
 		}
 
 	}
